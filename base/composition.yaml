@@ -125,12 +125,20 @@ spec:
             """.replace("\${ENV}", env).replace("\${NS}", ns).replace("\${STAGE}", stage).replace("\${PROJECT}", d.infisicalProject))
             _pg_env_roles.metadata.annotations = anno("pg-env-roles-bridge")
 
-            # XZone*Boostrap claims — solo spec.env. spec.type se añadirá cuando
-            # los XRDs de databases-bootstrap / rabbitmq-bootstrap lo soporten
-            # (TODO próxima iteración: extender esos XRDs y propagar el type
-            # para resolver adminRole, atlasEnabled, etc. via _defaults[type]
-            # en sus Compositions).
-            _claim_tmpl = """
+            # XZone*Boostrap claims. PG/MySQL XRDs son Namespaced (viven en
+            # infra-<env>); RMQ XRD es Cluster (sin namespace). spec.type se
+            # añadirá cuando los XRDs de databases-bootstrap / rabbitmq-bootstrap
+            # lo soporten — TODO próxima iteración.
+            _ns_claim_tmpl = """
+            apiVersion: bootstrap.docline.io/v1alpha1
+            kind: \${KIND}
+            metadata:
+              name: \${ENV}-\${SUFFIX}
+              namespace: \${NS}
+            spec:
+              env: \${ENV}
+            """
+            _cluster_claim_tmpl = """
             apiVersion: bootstrap.docline.io/v1alpha1
             kind: \${KIND}
             metadata:
@@ -139,13 +147,13 @@ spec:
               env: \${ENV}
             """
 
-            _pg_claim = yaml.decode(_claim_tmpl.replace("\${KIND}", "XZonePostgreBoostrap").replace("\${SUFFIX}", "postgres").replace("\${ENV}", env)) if do_pg else None
+            _pg_claim = yaml.decode(_ns_claim_tmpl.replace("\${KIND}", "XZonePostgreBoostrap").replace("\${SUFFIX}", "postgres").replace("\${ENV}", env).replace("\${NS}", ns)) if do_pg else None
             if _pg_claim != None: _pg_claim.metadata.annotations = anno("postgres-bootstrap")
 
-            _mysql_claim = yaml.decode(_claim_tmpl.replace("\${KIND}", "XZoneMysqlBoostrap").replace("\${SUFFIX}", "mysql").replace("\${ENV}", env)) if do_mysql else None
+            _mysql_claim = yaml.decode(_ns_claim_tmpl.replace("\${KIND}", "XZoneMysqlBoostrap").replace("\${SUFFIX}", "mysql").replace("\${ENV}", env).replace("\${NS}", ns)) if do_mysql else None
             if _mysql_claim != None: _mysql_claim.metadata.annotations = anno("mysql-bootstrap")
 
-            _rmq_claim = yaml.decode(_claim_tmpl.replace("\${KIND}", "XZoneRabbitmqBoostrap").replace("\${SUFFIX}", "rabbitmq").replace("\${ENV}", env)) if do_rmq else None
+            _rmq_claim = yaml.decode(_cluster_claim_tmpl.replace("\${KIND}", "XZoneRabbitmqBoostrap").replace("\${SUFFIX}", "rabbitmq").replace("\${ENV}", env)) if do_rmq else None
             if _rmq_claim != None: _rmq_claim.metadata.annotations = anno("rabbitmq-bootstrap")
 
             items = [_namespace, _netpol, _pg_env_roles] + [r for r in [_velero, _pg_claim, _mysql_claim, _rmq_claim] if r != None]
