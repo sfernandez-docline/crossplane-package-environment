@@ -1,0 +1,118 @@
+---
+# XRD Environment: representa un entorno de despliegue con políticas
+# operacionales parametrizadas por `spec.type` (live | nonlive | ephemeral).
+#
+# La Composition emite, según el type:
+#   - Namespace + NetworkPolicy default-deny (siempre)
+#   - XZonePostgreBoostrap, XZoneMysqlBoostrap, XZoneRabbitmqBoostrap claims
+#     (opcional, default true) → activan los packages de databases-bootstrap
+#     y rabbitmq-bootstrap para el env.
+#   - Velero Schedule (opcional) con retention según type.
+#
+# xflow Composition lee Environments via function-extra-resources y genera
+# Stages + Apps automáticamente. Añadir un env nuevo = aplicar un Environment
+# claim → todos los Flow XR (no inline) lo capturan.
+apiVersion: apiextensions.crossplane.io/v1
+kind: CompositeResourceDefinition
+metadata:
+  name: environments.env.docline.io
+spec:
+  group: env.docline.io
+  names:
+    kind: XEnvironment
+    plural: xenvironments
+  claimNames:
+    kind: Environment
+    plural: environments
+  defaultCompositeDeletePolicy: Background
+  defaultCompositionUpdatePolicy: Automatic
+  versions:
+    - name: v1alpha1
+      served: true
+      referenceable: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              required: [name, type]
+              properties:
+                name:
+                  type: string
+                  description: "Identificador del entorno; se usa como nombre del Namespace y referenciado por parentEnvs/upstreamEnvs de otros Environments."
+                  pattern: '^[a-z][a-z0-9-]{1,30}$'
+                type:
+                  type: string
+                  enum: [live, nonlive, ephemeral]
+                  description: |
+                    Tipo de entorno; determina políticas operacionales aplicadas
+                    por la Composition:
+                      live      → backup long retention (30d), deletionPolicy Orphan,
+                                  autoPromote default false
+                      nonlive   → backup short retention (7d), deletionPolicy Delete,
+                                  autoPromote default true, soporta parentEnvs (chain)
+                      ephemeral → no backup, TTL cleanup, autoPromote true
+                stage:
+                  type: string
+                  description: "Etiqueta informativa de categoría (dev/int/qa/staging/demo/...). Se exporta como label del Namespace; no determina la topología."
+                  pattern: '^[a-z][a-z0-9-]{1,30}$'
+                zone:
+                  type: string
+                  description: "Identificador de la zona destino (morocco-old, non-live, morocco, ...). Lo lee xflow para generar el agentNamespace correcto en las Stage Apps."
+                  pattern: '^[a-z][a-z0-9-]{1,30}$'
+                parentEnvs:
+                  type: array
+                  description: "Solo type=nonlive. Cadena de promotion Kargo: [] = primer stage (direct del Warehouse), [a] = lineal (recibe de a), [a,b] = convergencia multi-parent."
+                  items:
+                    type: string
+                    pattern: '^[a-z][a-z0-9-]{1,30}$'
+                  default: []
+                upstreamEnvs:
+                  type: array
+                  description: "Solo type=live. Stages upstream (typically nonlive) de los que recibe Freight."
+                  items:
+                    type: string
+                    pattern: '^[a-z][a-z0-9-]{1,30}$'
+                  default: []
+                autoPromote:
+                  type: boolean
+                  description: "Si true, Kargo auto-promociona freight sin aprobación manual. Default: true para nonlive/ephemeral, false para live."
+                ttl:
+                  type: string
+                  description: "Solo type=ephemeral. Tiempo de vida del entorno (e.g. '7d', '24h'). Después del TTL, un controller externo (no parte de esta Composition) puede limpiar el namespace."
+                bootstrapPostgres:
+                  type: boolean
+                  default: true
+                  description: "Si true, emite XZonePostgreBoostrap claim con spec.env=name → activa la Composition databases-bootstrap (PG)."
+                bootstrapMysql:
+                  type: boolean
+                  default: true
+                  description: "Si true, emite XZoneMysqlBoostrap claim → activa databases-bootstrap (MySQL)."
+                bootstrapRabbitmq:
+                  type: boolean
+                  default: true
+                  description: "Si true, emite XZoneRabbitmqBoostrap claim → activa rabbitmq-bootstrap (vhost + users + topology)."
+                veleroSchedule:
+                  type: object
+                  description: "Configuración de Velero backup schedule. Si se omite, defaults se aplican según type (30d live, 7d nonlive, off ephemeral)."
+                  properties:
+                    enabled:
+                      type: boolean
+                      description: "Override del default-by-type. Omitir para usar el default."
+                    schedule:
+                      type: string
+                      default: "0 2 * * *"
+                      description: "Cron schedule (UTC). Default: 02:00 UTC daily."
+                    retention:
+                      type: string
+                      description: "Retención en formato Go duration (e.g. 720h = 30d, 168h = 7d). Override del default-by-type."
+            status:
+              type: object
+              properties:
+                namespace:
+                  type: string
+                  description: "Nombre del namespace creado por la Composition."
+                appliedPolicies:
+                  type: object
+                  description: "Snapshot de políticas operacionales aplicadas (retention, deletionPolicy, etc.) — útil para debugging."

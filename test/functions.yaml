@@ -1,0 +1,11 @@
+---
+# Función pinned para `crossplane render` (test local).
+# Cuando el cluster instala el Configuration package, la dep declarada en
+# crossplane.yaml hace pull de esta misma versión automáticamente. Mantener
+# ambos sincronizados.
+apiVersion: pkg.crossplane.io/v1beta1
+kind: Function
+metadata:
+  name: function-kcl
+spec:
+  package: xpkg.upbound.io/crossplane-contrib/function-kcl:v0.12.1

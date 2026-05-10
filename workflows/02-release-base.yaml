@@ -1,0 +1,165 @@
+---
+# WorkflowTemplate `release-base`
+#
+# Reusable: expone una template `release` que clona un repo y corre
+# semantic-release. Outputs: `released` (true|false), `version` (semver).
+#
+# Pensado para ser invocado vía `templateRef` desde Workflows per-package
+# (ver crossplane-package-xflow/workflows/release.yaml como ejemplo).
+#
+# Sin filesystem compartido entre steps: cada build-* (xpkg, docker, etc.)
+# re-clona el repo después de que semantic-release haya pusheado el tag +
+# commit del CHANGELOG. Re-clone es barato (~5s) y evita PVCs RWO con sus
+# restricciones de scheduling.
+#
+# Imagen: docker.io/node:20-alpine. Necesitamos node (semantic-release) y
+# git (clone). git se instala en runtime con `apk add` (~2s).
+#
+# Secret consumido: github-pat (Opaque, key: token) en argo-workflows ns,
+# producido por argo-workflows-github-pat.yaml (ExternalSecret bridge).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: release-pipeline
+  namespace: argo-workflows
+---
+# Mínimos para Argo executor v3.5+. Sin acceso a recursos cluster — los
+# Workflows sólo ejecutan containers que hablan con APIs externas (GitHub,
+# GHCR), no con el cluster.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: release-pipeline
+  namespace: argo-workflows
+rules:
+  - apiGroups: ["argoproj.io"]
+    resources: ["workflowtaskresults"]
+    verbs: ["create", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: release-pipeline
+  namespace: argo-workflows
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: release-pipeline
+subjects:
+  - kind: ServiceAccount
+    name: release-pipeline
+    namespace: argo-workflows
+---
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: release-base
+  namespace: argo-workflows
+spec:
+  templates:
+    # ─── release: clone + semantic-release ───────────────────────
+    # Clona el repo en https://<token>@github.com/<owner>/<repo>.git al
+    # branch indicado, ejecuta semantic-release. Si hubo release nueva,
+    # output `released=true` + `version=X.Y.Z[-prerelease.N]`.
+    # Si no hay commits nuevos según conventional-commits, exit 0 y
+    # output `released=false`.
+    - name: release
+      inputs:
+        parameters:
+          - { name: repoURL, description: "https://github.com/<owner>/<repo>.git" }
+          - { name: branch,  default: "main" }
+      outputs:
+        parameters:
+          - name: released
+            valueFrom:
+              path: /tmp/RELEASED.flag
+              default: "false"
+          - name: version
+            valueFrom:
+              path: /tmp/RELEASED.version
+              default: ""
+      script:
+        image: docker.io/node:20-alpine
+        command: [sh]
+        env:
+          - name: GH_TOKEN
+            valueFrom: { secretKeyRef: { name: github-pat, key: token } }
+          - name: GITHUB_TOKEN
+            valueFrom: { secretKeyRef: { name: github-pat, key: token } }
+          - { name: CI, value: "true" }
+        source: |
+          set -eo pipefail
+          apk add --no-cache git >/dev/null
+          REPO="{{inputs.parameters.repoURL}}"
+          BRANCH="{{inputs.parameters.branch}}"
+          case "$REPO" in
+            https://*) ;;
+            *) echo "ERROR: repoURL debe ser https://github.com/<owner>/<repo>.git" >&2; exit 2 ;;
+          esac
+          REPO_AUTH="$(echo "$REPO" | sed "s|https://|https://x-access-token:${GITHUB_TOKEN}@|")"
+          git clone --branch "$BRANCH" "$REPO_AUTH" /tmp/repo
+          cd /tmp/repo
+          git remote set-url origin "$REPO_AUTH"
+          git config user.email "platform-ci@docline.com"
+          git config user.name  "Docline Platform CI"
+
+          # Plugins instalados aislados (--prefix). --no-save evita escribir
+          # package-lock al repo del package (que probablemente no es un
+          # proyecto npm).
+          # Pin semantic-release@24 + plugins compatibles. Las majors actuales
+          # de @semantic-release/github ≥11 exigen semantic-release ≥24.1.
+          # IMPORTANT: una sola invocación a `npm install` — sin package.json,
+          # cada llamada a npm install borra los paquetes previos.
+          # conventional-changelog-conventionalcommits es peer-dep del preset
+          # 'conventionalcommits' usado por commit-analyzer + release-notes-generator.
+          mkdir -p /tmp/sr
+          npm install --prefix=/tmp/sr --no-save --no-audit --no-fund \
+            semantic-release@24 \
+            @semantic-release/commit-analyzer@13 \
+            @semantic-release/release-notes-generator@14 \
+            @semantic-release/changelog@6 \
+            @semantic-release/git@10 \
+            @semantic-release/github@11 \
+            conventional-changelog-conventionalcommits@8
+          export PATH="/tmp/sr/node_modules/.bin:$PATH"
+
+          # Branches config dinámica vía --extends. No podemos pasar JSON
+          # con commas como -b (yargs `array: true` corta por commas y
+          # parte el objeto en strings inválidos). Solución elegante:
+          #   - .releaserc.json del repo del package → plugins + tagFormat
+          #     (lo que NO varía entre packages ni entre runs)
+          #   - /tmp/sr-branches.json → SOLO {"branches": [...]} dinámico
+          #     según el parámetro branch del Workflow
+          # semantic-release hace merge: extends provides defaults,
+          # .releaserc.json añade plugins/tagFormat encima.
+          if [ "$BRANCH" = "main" ]; then
+            BRANCHES_JSON='["main"]'
+          else
+            BRANCHES_JSON=$(printf '["main",{"name":"%s","prerelease":"%s"}]' "$BRANCH" "$BRANCH")
+          fi
+          printf '{"branches": %s}\n' "$BRANCHES_JSON" > /tmp/sr-branches.json
+          echo "[release-base] branches config: $(cat /tmp/sr-branches.json)"
+
+          # Alpine /bin/sh no soporta ${PIPESTATUS[0]}: redirect-then-cat.
+          set +e
+          semantic-release --extends /tmp/sr-branches.json > /tmp/sr.log 2>&1
+          RC=$?
+          set -e
+          cat /tmp/sr.log
+          if [ "$RC" -ne 0 ]; then
+            echo "ERROR: semantic-release falló (rc=$RC)" >&2
+            exit "$RC"
+          fi
+
+          # semantic-release imprime: "Published release X.Y.Z on default channel"
+          # o "Published release X.Y.Z-int.N on int channel"
+          VERSION="$(grep -oE 'Published release [0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?' /tmp/sr.log | head -1 | awk '{print $3}' || true)"
+          if [ -n "$VERSION" ]; then
+            echo "true" > /tmp/RELEASED.flag
+            printf '%s' "$VERSION" > /tmp/RELEASED.version
+            echo "[release-base] published v${VERSION}"
+          else
+            echo "false" > /tmp/RELEASED.flag
+            : > /tmp/RELEASED.version
+            echo "[release-base] no new release (no conventional commits since last tag)"
+          fi

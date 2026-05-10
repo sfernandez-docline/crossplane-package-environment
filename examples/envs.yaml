@@ -1,0 +1,63 @@
+---
+# Ejemplos de Environment claims.
+# Aplicar al Hub (control-ireland) — xflow Composition los descubre via
+# function-extra-resources y genera Stages + Apps automáticamente.
+apiVersion: env.docline.io/v1alpha1
+kind: Environment
+metadata:
+  name: int
+spec:
+  name: int
+  type: nonlive
+  stage: int
+  zone: non-live
+  parentEnvs: []
+  autoPromote: true
+---
+apiVersion: env.docline.io/v1alpha1
+kind: Environment
+metadata:
+  name: qa
+spec:
+  name: qa
+  type: nonlive
+  stage: qa
+  zone: non-live
+  parentEnvs: [int]
+  autoPromote: true
+---
+apiVersion: env.docline.io/v1alpha1
+kind: Environment
+metadata:
+  name: staging
+spec:
+  name: staging
+  type: nonlive
+  stage: staging
+  zone: non-live
+  parentEnvs: [qa]
+  autoPromote: false
+---
+apiVersion: env.docline.io/v1alpha1
+kind: Environment
+metadata:
+  name: main
+spec:
+  name: main
+  type: nonlive
+  stage: main
+  zone: non-live
+  parentEnvs: [staging]
+  autoPromote: false
+---
+apiVersion: env.docline.io/v1alpha1
+kind: Environment
+metadata:
+  name: prod-morocco
+spec:
+  name: prod-morocco
+  type: live
+  stage: prod-morocco
+  zone: morocco-old
+  upstreamEnvs: [staging]
+  autoPromote: false

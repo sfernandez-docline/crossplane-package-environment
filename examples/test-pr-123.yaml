@@ -1,0 +1,19 @@
+---
+# Test case: env ephemeral (per-feature-branch).
+# type=ephemeral → no Velero (sin backup).
+# bootstrapPostgres/Mysql/Rabbitmq=false → solo Namespace + NetworkPolicy.
+# Output esperado: 2 kinds.
+apiVersion: env.docline.io/v1alpha1
+kind: Environment
+metadata:
+  name: pr-123
+spec:
+  name: pr-123
+  type: ephemeral
+  stage: ephemeral
+  zone: non-live
+  ttl: 7d
+  bootstrapPostgres: false
+  bootstrapMysql: false
+  bootstrapRabbitmq: false
+  autoPromote: true

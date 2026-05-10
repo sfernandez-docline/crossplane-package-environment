@@ -1,0 +1,149 @@
+---
+# Composition: parametriza por spec.type (live | nonlive | ephemeral) usando
+# dict lookup. Cero condicionales sobre type. Cada item es un manifest YAML
+# templatizado — KCL solo aplica .replace() con los defaults del type.
+apiVersion: apiextensions.crossplane.io/v1
+kind: Composition
+metadata:
+  name: environment
+  labels:
+    type: environment
+spec:
+  compositeTypeRef:
+    apiVersion: env.docline.io/v1alpha1
+    kind: XEnvironment
+  mode: Pipeline
+  pipeline:
+    - step: render
+      functionRef:
+        name: function-kcl
+      input:
+        apiVersion: krm.kcl.dev/v1alpha1
+        kind: KCLRun
+        spec:
+          source: |
+            import yaml
+
+            oxr = option("params").oxr
+            spec = oxr.spec
+            env = spec.name
+            envType = spec.type
+            stage = spec.stage if spec?.stage else env
+            ns = "infra-" + env
+
+            # Defaults por type — única tabla de verdad en este paquete.
+            type_defaults = {
+                "live"     : {veleroRetention="720h", deletionPolicy="Orphan", infisicalProject="env-live-secrets",     veleroEnabled=True}
+                "nonlive"  : {veleroRetention="168h", deletionPolicy="Delete", infisicalProject="env-non-live-secrets", veleroEnabled=True}
+                "ephemeral": {veleroRetention="0",    deletionPolicy="Delete", infisicalProject="env-non-live-secrets", veleroEnabled=False}
+            }
+            d = type_defaults[envType]
+
+            # Override de Velero opt-out via spec.veleroSchedule.enabled=false.
+            vsched = spec.veleroSchedule if spec?.veleroSchedule != Undefined else {}
+            velero_enabled = vsched.enabled if vsched?.enabled != Undefined else d.veleroEnabled
+            velero_retention = vsched.retention if vsched?.retention != Undefined else d.veleroRetention
+            velero_schedule = vsched.schedule if vsched?.schedule != Undefined else "0 2 * * *"
+
+            # function-kcl matchea recursos por dual annotation; helper compacto.
+            anno = lambda n: str -> {str:str} {{
+                "krm.kcl.dev/composition-resource-name" = n
+                "crossplane.io/composition-resource-name" = n
+                "krm.kcl.dev/ready" = "True"
+            }}
+
+            # Bootstrap toggles (default True).
+            do_pg = spec.bootstrapPostgres if spec?.bootstrapPostgres != Undefined else True
+            do_mysql = spec.bootstrapMysql if spec?.bootstrapMysql != Undefined else True
+            do_rmq = spec.bootstrapRabbitmq if spec?.bootstrapRabbitmq != Undefined else True
+
+            # ── Templates YAML (placeholders ${VAR}, sustituidos con .replace) ─
+
+            _namespace = yaml.decode("""
+            apiVersion: v1
+            kind: Namespace
+            metadata:
+              name: \${NS}
+              labels:
+                env-type: \${TYPE}
+                stage: \${STAGE}
+                docline.io/managed-by: crossplane
+                docline.io/environment: \${ENV}
+            """.replace("\${NS}", ns).replace("\${TYPE}", envType).replace("\${STAGE}", stage).replace("\${ENV}", env))
+            _namespace.metadata.annotations = anno("namespace")
+
+            _netpol = yaml.decode("""
+            apiVersion: networking.k8s.io/v1
+            kind: NetworkPolicy
+            metadata:
+              name: default-deny-all
+              namespace: \${NS}
+            spec:
+              podSelector: {}
+              policyTypes: [Ingress, Egress]
+            """.replace("\${NS}", ns))
+            _netpol.metadata.annotations = anno("netpol-default-deny")
+
+            _velero = yaml.decode("""
+            apiVersion: velero.io/v1
+            kind: Schedule
+            metadata:
+              name: env-\${ENV}-daily
+              namespace: velero
+            spec:
+              schedule: "\${SCHEDULE}"
+              template:
+                ttl: \${RETENTION}
+                includedNamespaces: [\${NS}]
+                snapshotVolumes: true
+                defaultVolumesToFsBackup: false
+            """.replace("\${ENV}", env).replace("\${NS}", ns).replace("\${SCHEDULE}", velero_schedule).replace("\${RETENTION}", velero_retention)) if velero_enabled else None
+            if _velero != None: _velero.metadata.annotations = anno("velero-schedule")
+
+            _pg_env_roles = yaml.decode("""
+            apiVersion: secrets.infisical.com/v1alpha1
+            kind: InfisicalSecret
+            metadata:
+              name: pg-env-roles-\${ENV}-sync
+              namespace: \${NS}
+            spec:
+              hostAPI: http://hub-proxy.infisical.svc.cluster.local:8080/api
+              syncConfig: { resyncInterval: 450s }
+              authentication:
+                universalAuth:
+                  credentialsRef: { secretName: infisical-eso-auth, secretNamespace: \${NS} }
+                  secretsScope:
+                    projectSlug: \${PROJECT}
+                    envSlug: \${STAGE}
+                    secretsPath: /postgres/roles
+                    recursive: false
+              managedKubeSecretReferences:
+                - secretName: pg-env-roles-\${ENV}
+                  secretNamespace: \${NS}
+                  creationPolicy: Owner
+                  template: { includeAllSecrets: true }
+            """.replace("\${ENV}", env).replace("\${NS}", ns).replace("\${STAGE}", stage).replace("\${PROJECT}", d.infisicalProject))
+            _pg_env_roles.metadata.annotations = anno("pg-env-roles-bridge")
+
+            # XZone*Boostrap claims — pasamos type para que sus Compositions
+            # internas resuelvan defaults via su propio type_defaults dict.
+            _claim_tmpl = """
+            apiVersion: bootstrap.docline.io/v1alpha1
+            kind: \${KIND}
+            metadata:
+              name: \${ENV}-\${SUFFIX}
+            spec:
+              env: \${ENV}
+              type: \${TYPE}
+            """
+
+            _pg_claim = yaml.decode(_claim_tmpl.replace("\${KIND}", "XZonePostgreBoostrap").replace("\${SUFFIX}", "postgres").replace("\${ENV}", env).replace("\${TYPE}", envType)) if do_pg else None
+            if _pg_claim != None: _pg_claim.metadata.annotations = anno("postgres-bootstrap")
+
+            _mysql_claim = yaml.decode(_claim_tmpl.replace("\${KIND}", "XZoneMysqlBoostrap").replace("\${SUFFIX}", "mysql").replace("\${ENV}", env).replace("\${TYPE}", envType)) if do_mysql else None
+            if _mysql_claim != None: _mysql_claim.metadata.annotations = anno("mysql-bootstrap")
+
+            _rmq_claim = yaml.decode(_claim_tmpl.replace("\${KIND}", "XZoneRabbitmqBoostrap").replace("\${SUFFIX}", "rabbitmq").replace("\${ENV}", env).replace("\${TYPE}", envType)) if do_rmq else None
+            if _rmq_claim != None: _rmq_claim.metadata.annotations = anno("rabbitmq-bootstrap")
+
+            items = [_namespace, _netpol, _pg_env_roles] + [r for r in [_velero, _pg_claim, _mysql_claim, _rmq_claim] if r != None]

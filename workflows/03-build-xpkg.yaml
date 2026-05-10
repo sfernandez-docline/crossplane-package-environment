@@ -1,0 +1,104 @@
+---
+# WorkflowTemplate `build-xpkg`
+#
+# Reusable: expone una template `build-and-push` que clona un repo a un
+# tag específico, builds un Crossplane Configuration package (xpkg) y lo
+# pushea a un registry OCI (típicamente GHCR).
+#
+# Diseñado para ser invocado tras `release-base.release` cuando éste
+# emite `released=true`. El parámetro `version` viene de su output.
+#
+# Imagen: alpine:3.20 + curl crossplane CLI en runtime. ~30MB tarball,
+# step entero <1 min de wall time.
+#
+# Auth GHCR: dockerconfigjson montado del Secret github-pat → copiado a
+# ~/.docker/config.json. crossplane xpkg push lo respeta.
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: build-xpkg
+  namespace: argo-workflows
+spec:
+  templates:
+    - name: build-and-push
+      inputs:
+        parameters:
+          - { name: repoURL, description: "https://github.com/<owner>/<repo>.git" }
+          - { name: branch,  default: "main" }
+          - { name: version, description: "semver string (sin v); ej. 0.9.0 o 0.9.0-int.1" }
+          - { name: packageName, description: "ej. crossplane-package-xflow" }
+          - { name: packageRoot, default: "." }
+          # buildIgnore: comma-separated globs ignorados al construir el xpkg
+          - name: buildIgnore
+            default: "examples/*,test/*,README.md,Makefile,*.xpkg,.gitignore,base/kustomization.yaml,base/rbac.yaml,workflows/*,.releaserc.json,CHANGELOG.md,.github/*,scripts/*"
+          - { name: ghcrOwner, default: "sfernandez-docline" }
+          # Crossplane v2.x CLI tiene los subcommands xpkg build/push.
+          # v1.x CLI era un binario distinto (entrypoint = controller).
+          - { name: crossplaneVersion, default: "v2.2.1" }
+      script:
+        image: alpine:3.20
+        command: [sh]
+        env:
+          - name: GITHUB_TOKEN
+            valueFrom: { secretKeyRef: { name: github-pat, key: token } }
+        volumeMounts:
+          - { name: gh-pat, mountPath: /secret/gh, readOnly: true }
+        source: |
+          set -eo pipefail
+          apk add --no-cache curl ca-certificates git >/dev/null
+
+          REPO="{{inputs.parameters.repoURL}}"
+          BRANCH="{{inputs.parameters.branch}}"
+          VERSION="{{inputs.parameters.version}}"
+          PKG="{{inputs.parameters.packageName}}"
+          ROOT="{{inputs.parameters.packageRoot}}"
+          IGNORE="{{inputs.parameters.buildIgnore}}"
+          OWNER="$(echo "{{inputs.parameters.ghcrOwner}}" | tr '[:upper:]' '[:lower:]')"
+          XPVER="{{inputs.parameters.crossplaneVersion}}"
+
+          if [ -z "$VERSION" ]; then
+            echo "ERROR: version vacía — el caller debe asegurar released=true antes" >&2
+            exit 2
+          fi
+
+          # Re-clone post-semver: branch HEAD apunta al commit que semantic-release
+          # creó (changelog + tag). Necesitamos ese estado para construir el xpkg
+          # con el contenido más reciente.
+          REPO_AUTH="$(echo "$REPO" | sed "s|https://|https://x-access-token:${GITHUB_TOKEN}@|")"
+          git clone --branch "$BRANCH" --depth=1 "$REPO_AUTH" /tmp/repo
+          cd /tmp/repo
+
+          # IMPORTANT: el binario CLI standalone se llama `crank` en releases.
+          # `crossplane` en la misma URL es el controller binary y rechaza
+          # subcommand `xpkg`. El install.sh oficial descarga `crank` y lo
+          # renombra a `crossplane` localmente.
+          echo "[1/3] download crossplane CLI (crank) ${XPVER}"
+          curl -fsSL "https://releases.crossplane.io/stable/${XPVER}/bin/linux_amd64/crank" \
+            -o /usr/local/bin/crossplane
+          chmod +x /usr/local/bin/crossplane
+          crossplane version --client 2>/dev/null || crossplane version 2>/dev/null || true
+
+          PKG_DIR="/tmp/repo/${ROOT}"
+          PKG_FILE="/tmp/${PKG}-${VERSION}.xpkg"
+          echo "[2/3] xpkg build root=${PKG_DIR} ignore='${IGNORE}'"
+          cd "$PKG_DIR"
+          crossplane xpkg build \
+            --package-root="." \
+            --ignore="${IGNORE}" \
+            --package-file="${PKG_FILE}"
+          ls -la "${PKG_FILE}"
+
+          # Auth a GHCR via dockerconfigjson — el binario crossplane respeta
+          # ~/.docker/config.json para auth registry.
+          mkdir -p "$HOME/.docker"
+          cp /secret/gh/.dockerconfigjson "$HOME/.docker/config.json"
+
+          IMG="ghcr.io/${OWNER}/${PKG}:${VERSION}"
+          echo "[3/3] xpkg push ${IMG}"
+          crossplane xpkg push \
+            --package-files="${PKG_FILE}" \
+            "${IMG}"
+          echo "[done] ${IMG}"
+        resources:
+          requests: { cpu: 100m, memory: 256Mi }
+          limits:   { cpu: "1",  memory: 1Gi   }

@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# pre-commit hook: corre `make test` si hay cambios staged en base/ (XRD/Composition).
+#
+# Instalación: desde packages/crossplane-package-xflow/ ejecutar
+#   make install-hooks
+#
+# Funciona tanto si el package es repo independiente como submódulo
+# (git rev-parse --show-toplevel devuelve la raíz del repo o submódulo;
+# el hook se ejecuta SIEMPRE en esa raíz).
+#
+# Bypass: git commit --no-verify (cuando sepas que el render fallaría a
+# propósito, ej. cambio temporal).
+
+set -euo pipefail
+
+# Si hay archivos staged dentro de base/, corremos test. Cualquier otro
+# cambio (Makefile, README, examples) skipea el test (esos no afectan
+# render).
+if ! git diff --cached --name-only | grep -qE "^base/"; then
+  exit 0
+fi
+
+echo "[pre-commit] cambios en base/ detectados — corriendo make test..."
+
+# Working dir del hook ya es la raíz del repo (donde está Makefile).
+if ! make test; then
+  echo ""
+  echo "❌ pre-commit: \`make test\` falló — aborta commit."
+  echo "   Si necesitas commitear sin pasar el test (cambio temporal),"
+  echo "   usa: git commit --no-verify"
+  exit 1
+fi
+
+echo "✓ pre-commit OK"

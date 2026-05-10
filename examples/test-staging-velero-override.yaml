@@ -1,0 +1,18 @@
+---
+# Test case: env nonlive con veleroSchedule override (60d en lugar de default 7d).
+# Verifica que spec.veleroSchedule.retention sobrescribe el default-by-type.
+apiVersion: env.docline.io/v1alpha1
+kind: Environment
+metadata:
+  name: staging
+spec:
+  name: staging
+  type: nonlive
+  stage: staging
+  zone: non-live
+  parentEnvs: [qa]
+  autoPromote: false
+  veleroSchedule:
+    enabled: true
+    retention: "1440h"      # 60d, override
+    schedule: "0 4 * * *"   # 04:00 UTC, override

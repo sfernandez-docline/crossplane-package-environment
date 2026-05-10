@@ -1,0 +1,15 @@
+---
+# Test case: env nonlive con chain (parentEnvs vacío = primer stage).
+# Output esperado: Namespace + NetworkPolicy + Velero Schedule (7d) +
+# 3 XZone*Boostrap claims = 6 kinds.
+apiVersion: env.docline.io/v1alpha1
+kind: Environment
+metadata:
+  name: int
+spec:
+  name: int
+  type: nonlive
+  stage: int
+  zone: non-live
+  parentEnvs: []
+  autoPromote: true

@@ -1,0 +1,15 @@
+---
+# Test case: env live (productivo). Type=live → Velero retention 30d.
+# Output esperado: Namespace + NetworkPolicy + Velero Schedule (30d) +
+# 3 XZone*Boostrap claims = 6 kinds.
+apiVersion: env.docline.io/v1alpha1
+kind: Environment
+metadata:
+  name: prod-morocco
+spec:
+  name: prod-morocco
+  type: live
+  stage: prod-morocco
+  zone: morocco-old
+  upstreamEnvs: [staging]
+  autoPromote: false
