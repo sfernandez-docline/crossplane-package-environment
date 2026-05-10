@@ -15,7 +15,8 @@
 apiVersion: apiextensions.crossplane.io/v1
 kind: CompositeResourceDefinition
 metadata:
-  name: environments.env.docline.io
+  # Crossplane requiere XRD metadata.name == names.plural + "." + group (composite plural).
+  name: xenvironments.env.docline.io
 spec:
   group: env.docline.io
   names:
