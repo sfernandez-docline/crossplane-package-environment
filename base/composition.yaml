@@ -34,7 +34,7 @@ spec:
             # Defaults por type — única tabla de verdad en este paquete.
             type_defaults = {
                 "live"     : {veleroRetention="720h", deletionPolicy="Orphan", infisicalProject="env-live-secrets",     veleroEnabled=True}
-                "nonlive"  : {veleroRetention="168h", deletionPolicy="Delete", infisicalProject="env-non-live-secrets", veleroEnabled=True}
+                "nonlive"  : {veleroRetention="168h", deletionPolicy="Delete", infisicalProject="env-non-live-secrets", veleroEnabled=False}
                 "ephemeral": {veleroRetention="0",    deletionPolicy="Delete", infisicalProject="env-non-live-secrets", veleroEnabled=False}
             }
             d = type_defaults[envType]
