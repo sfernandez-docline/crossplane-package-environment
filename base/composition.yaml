@@ -125,6 +125,36 @@ spec:
             """.replace("\${ENV}", env).replace("\${NS}", ns).replace("\${STAGE}", stage).replace("\${PROJECT}", d.infisicalProject))
             _pg_env_roles.metadata.annotations = anno("pg-env-roles-bridge")
 
+            # RMQ user creds bridge: emite rmq-<env>-user-creds en namespace
+            # `rabbitmq` (donde el operator de RabbitMQ lee importCredentialsSecret
+            # del User CR). El bridge necesita infisical-eso-auth en `rabbitmq` —
+            # ya presente porque las bridges admin/readonly viven ahí. Source:
+            # \${PROJECT}/\${STAGE}/rabbitmq/{username,password}.
+            _rmq_user_creds = yaml.decode("""
+            apiVersion: secrets.infisical.com/v1alpha1
+            kind: InfisicalSecret
+            metadata:
+              name: rmq-\${ENV}-user-creds-sync
+              namespace: rabbitmq
+            spec:
+              hostAPI: http://hub-proxy.infisical.svc.cluster.local:8080/api
+              syncConfig: { resyncInterval: 450s }
+              authentication:
+                universalAuth:
+                  credentialsRef: { secretName: infisical-eso-auth, secretNamespace: rabbitmq }
+                  secretsScope:
+                    projectSlug: \${PROJECT}
+                    envSlug: \${STAGE}
+                    secretsPath: /rabbitmq
+                    recursive: false
+              managedKubeSecretReferences:
+                - secretName: rmq-\${ENV}-user-creds
+                  secretNamespace: rabbitmq
+                  creationPolicy: Owner
+                  template: { includeAllSecrets: true }
+            """.replace("\${ENV}", env).replace("\${STAGE}", stage).replace("\${PROJECT}", d.infisicalProject))
+            _rmq_user_creds.metadata.annotations = anno("rmq-user-creds-bridge")
+
             # XZone*Boostrap claims. PG/MySQL XRDs son Namespaced (viven en
             # infra-<env>); RMQ XRD es Cluster (sin namespace). spec.type se
             # añadirá cuando los XRDs de databases-bootstrap / rabbitmq-bootstrap
@@ -156,4 +186,4 @@ spec:
             _rmq_claim = yaml.decode(_cluster_claim_tmpl.replace("\${KIND}", "XZoneRabbitmqBoostrap").replace("\${SUFFIX}", "rabbitmq").replace("\${ENV}", env)) if do_rmq else None
             if _rmq_claim != None: _rmq_claim.metadata.annotations = anno("rabbitmq-bootstrap")
 
-            items = [_namespace, _netpol, _pg_env_roles] + [r for r in [_velero, _pg_claim, _mysql_claim, _rmq_claim] if r != None]
+            items = [_namespace, _netpol, _pg_env_roles, _rmq_user_creds] + [r for r in [_velero, _pg_claim, _mysql_claim, _rmq_claim] if r != None]
