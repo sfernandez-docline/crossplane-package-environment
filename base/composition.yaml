@@ -45,6 +45,17 @@ spec:
             velero_retention = vsched.retention if vsched?.retention != Undefined else d.veleroRetention
             velero_schedule = vsched.schedule if vsched?.schedule != Undefined else "0 2 * * *"
 
+            # subdomainSuffix:
+            #   - nonlive / ephemeral → HARDCODED al nombre del env (ignoramos
+            #     spec.subdomainSuffix si lo trae). Garantiza unicidad sin
+            #     que el usuario tenga que recordar configurarlo.
+            #   - live → spec.subdomainSuffix (opcional, default "").
+            #     Permite zone-morocco-old (suffix "") y zone-morocco (suffix
+            #     "new") coexistiendo en el mismo dominio durante migración;
+            #     cuando se valide se cambia el suffix de morocco a "".
+            _live_suffix = spec.subdomainSuffix if spec?.subdomainSuffix != Undefined else ""
+            subdomain_suffix = env if envType in ["nonlive", "ephemeral"] else _live_suffix
+
             # function-kcl matchea recursos por dual annotation; helper compacto.
             anno = lambda n: str -> {str:str} {{
                 "krm.kcl.dev/composition-resource-name" = n
@@ -83,6 +94,28 @@ spec:
               policyTypes: [Ingress, Egress]
             """.replace("\${NS}", ns))
             _netpol.metadata.annotations = anno("netpol-default-deny")
+
+            # ConfigMap env-config — metadatos del entorno para que cualquier
+            # Deployment del ns consuma vía envFrom.configMapRef:
+            #   - SUBDOMAIN_SUFFIX: sufijo de subdominio (DNS-safe). Para
+            #     entornos nonlive/ephemeral = nombre del env. Para live =
+            #     spec.subdomainSuffix (default ""). Permite zone-morocco +
+            #     zone-morocco-old en el mismo dominio durante migración.
+            #   - ENV_NAME / ENV_TYPE / ENV_STAGE: convenientes para tags,
+            #     log enrichment, etc.
+            _env_config = yaml.decode("""
+            apiVersion: v1
+            kind: ConfigMap
+            metadata:
+              name: env-config
+              namespace: \${NS}
+            data:
+              ENV_NAME: \"\${ENV}\"
+              ENV_TYPE: \"\${TYPE}\"
+              ENV_STAGE: \"\${STAGE}\"
+              SUBDOMAIN_SUFFIX: \"\${SUFFIX}\"
+            """.replace("\${NS}", ns).replace("\${ENV}", env).replace("\${TYPE}", envType).replace("\${STAGE}", stage).replace("\${SUFFIX}", subdomain_suffix))
+            _env_config.metadata.annotations = anno("env-config")
 
             _velero = yaml.decode("""
             apiVersion: velero.io/v1
@@ -186,4 +219,4 @@ spec:
             _rmq_claim = yaml.decode(_cluster_claim_tmpl.replace("\${KIND}", "XZoneRabbitmqBoostrap").replace("\${SUFFIX}", "rabbitmq").replace("\${ENV}", env)) if do_rmq else None
             if _rmq_claim != None: _rmq_claim.metadata.annotations = anno("rabbitmq-bootstrap")
 
-            items = [_namespace, _netpol, _pg_env_roles, _rmq_user_creds] + [r for r in [_velero, _pg_claim, _mysql_claim, _rmq_claim] if r != None]
+            items = [_namespace, _netpol, _env_config, _pg_env_roles, _rmq_user_creds] + [r for r in [_velero, _pg_claim, _mysql_claim, _rmq_claim] if r != None]

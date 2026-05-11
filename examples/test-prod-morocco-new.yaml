@@ -1,0 +1,23 @@
+---
+# Test case: env live con subdomainSuffix explícito.
+# Caso uso: zone-morocco (nuevo) coexistiendo con zone-morocco-old (legacy)
+# durante migración productiva. zone-morocco-old usa suffix="" y vive en
+# docline.ma; zone-morocco usa suffix="new" y vive en docline-new.ma.
+# Cuando la migración termine, se cambiará el suffix de morocco a "" y se
+# retirará morocco-old.
+#
+# Output esperado: 9 kinds (Namespace + NetworkPolicy + env-config CM +
+# pg-env-roles bridge + rmq-creds bridge + Velero Schedule 30d +
+# 3 XZone*Boostrap claims).
+apiVersion: env.docline.io/v1alpha1
+kind: Environment
+metadata:
+  name: prod-morocco
+spec:
+  name: prod-morocco
+  type: live
+  stage: prod-morocco
+  zone: morocco
+  subdomainSuffix: new
+  upstreamEnvs: [staging]
+  autoPromote: false
