@@ -154,7 +154,17 @@ spec:
                 - secretName: pg-env-roles-\${ENV}
                   secretNamespace: \${NS}
                   creationPolicy: Owner
-                  template: { includeAllSecrets: true }
+                  template:
+                    includeAllSecrets: true
+                    # Reflector replica este Secret al ns pgbouncer, donde el
+                    # Deployment pgbouncer-<env> emitido por XZonePostgreBoostrap
+                    # lo monta como auth_file. Sin estas annotations el Secret
+                    # queda solo en infra-<env> y los pods pgbouncer no arrancan.
+                    metadata:
+                      annotations:
+                        reflector.v1.k8s.emberstack.com/reflection-allowed: "true"
+                        reflector.v1.k8s.emberstack.com/reflection-auto-enabled: "true"
+                        reflector.v1.k8s.emberstack.com/reflection-auto-namespaces: pgbouncer
             """.replace("\${ENV}", env).replace("\${NS}", ns).replace("\${STAGE}", stage).replace("\${PROJECT}", d.infisicalProject))
             _pg_env_roles.metadata.annotations = anno("pg-env-roles-bridge")
 
