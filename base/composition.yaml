@@ -156,6 +156,21 @@ spec:
                   creationPolicy: Owner
                   template:
                     includeAllSecrets: true
+                    # Reflector replica este Secret a core-<env> ns para que
+                    # los Deployments (ms-agendaslots, ms-event-cdc, ms-messages,
+                    # cdc, etc.) puedan referenciar pg-env-roles-<env>.mock-<env>
+                    # con secretKeyRef desde su Deployment (inline `env:` con
+                    # password real per-env, evitando los valores morocco-hardcoded
+                    # de Infisical core-secrets /apps/<svc>).
+                    #
+                    # pgbouncer ya recibe una COPIA con labels via el Object
+                    # `pg-env-roles-<env>-pgbouncer-mirror` (ver más abajo) —
+                    # NO se incluye aquí porque Reflector no copia labels.
+                    metadata:
+                      annotations:
+                        reflector.v1.k8s.emberstack.com/reflection-allowed: "true"
+                        reflector.v1.k8s.emberstack.com/reflection-auto-enabled: "true"
+                        reflector.v1.k8s.emberstack.com/reflection-auto-namespaces: core-\${ENV}
             """.replace("\${ENV}", env).replace("\${NS}", ns).replace("\${STAGE}", stage).replace("\${PROJECT}", d.infisicalProject))
             _pg_env_roles.metadata.annotations = anno("pg-env-roles-bridge")
 
