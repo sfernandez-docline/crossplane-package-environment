@@ -401,4 +401,37 @@ spec:
             """.replace("\${NS}", ns).replace("\${ENV}", env).replace("\${PROJECT}", d.infisicalProject).replace("\${STAGE}", stage))
             _folder_bootstrap.metadata.annotations = anno("infisical-folders-bootstrap")
 
-            items = [_namespace, _netpol, _env_config, _pg_env_roles, _rmq_user_creds, _folder_bootstrap_netpol, _folder_bootstrap] + [r for r in [_velero, _pg_claim, _mysql_claim, _rmq_claim] if r != None]
+            # NetworkPolicy `allow-dns-egress` en core-<env>: las netpols por
+            # microservicio (cdc-allow, ms-event-cdc-allow, etc.) declaran
+            # policyTypes: [Egress] pero NO incluyen egress a DNS (puerto 53
+            # UDP a kube-system). Resultado: los pods fallan resolviendo
+            # pgbouncer/rabbitmq y crashean.
+            #
+            # K8s suma reglas de múltiples NetworkPolicies que matchen el pod,
+            # así que añadir esta policy con podSelector vacío (= todos los
+            # pods) abre DNS sin tocar las netpols por-app. Fix transitorio
+            # hasta que cada repo legacy-<svc>-ops incluya DNS en su netpol.
+            #
+            # core-<env> ns lo crea la App de ArgoCD del servicio (no esta
+            # Composition). Crossplane reintenta si aún no existe.
+            _allow_dns_core = yaml.decode("""
+            apiVersion: networking.k8s.io/v1
+            kind: NetworkPolicy
+            metadata:
+              name: allow-dns-egress
+              namespace: core-\${ENV}
+            spec:
+              podSelector: {}
+              policyTypes: [Egress]
+              egress:
+                - to:
+                    - namespaceSelector:
+                        matchLabels:
+                          kubernetes.io/metadata.name: kube-system
+                  ports:
+                    - { port: 53, protocol: UDP }
+                    - { port: 53, protocol: TCP }
+            """.replace("\${ENV}", env))
+            _allow_dns_core.metadata.annotations = anno("core-allow-dns-egress")
+
+            items = [_namespace, _netpol, _env_config, _pg_env_roles, _rmq_user_creds, _folder_bootstrap_netpol, _folder_bootstrap, _allow_dns_core] + [r for r in [_velero, _pg_claim, _mysql_claim, _rmq_claim] if r != None]
