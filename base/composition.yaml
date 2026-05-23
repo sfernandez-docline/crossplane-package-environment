@@ -164,7 +164,7 @@ spec:
                       annotations:
                         reflector.v1.k8s.emberstack.com/reflection-allowed: "true"
                         reflector.v1.k8s.emberstack.com/reflection-auto-enabled: "true"
-                        reflector.v1.k8s.emberstack.com/reflection-auto-namespaces: pgbouncer
+                        reflector.v1.k8s.emberstack.com/reflection-auto-namespaces: pgbouncer,core-\${ENV}
             """.replace("\${ENV}", env).replace("\${NS}", ns).replace("\${STAGE}", stage).replace("\${PROJECT}", d.infisicalProject))
             _pg_env_roles.metadata.annotations = anno("pg-env-roles-bridge")
 
