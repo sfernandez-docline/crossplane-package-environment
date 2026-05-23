@@ -173,6 +173,12 @@ spec:
             # del User CR). El bridge necesita infisical-eso-auth en `rabbitmq` —
             # ya presente porque las bridges admin/readonly viven ahí. Source:
             # \${PROJECT}/\${STAGE}/rabbitmq/{username,password}.
+            #
+            # Reflector annotations: los microservicios en core-<env> consumen
+            # rmq-<env>-user-creds (envFrom/secretKeyRef) en su propio namespace.
+            # Sin reflection-auto-namespaces el Secret solo existe en `rabbitmq`
+            # y los pods de core-<env> fallan CreateContainerConfigError. Solo
+            # se replica a core-<env> (no a otros envs) para evitar cruces.
             _rmq_user_creds = yaml.decode("""
             apiVersion: secrets.infisical.com/v1alpha1
             kind: InfisicalSecret
@@ -194,7 +200,13 @@ spec:
                 - secretName: rmq-\${ENV}-user-creds
                   secretNamespace: rabbitmq
                   creationPolicy: Owner
-                  template: { includeAllSecrets: true }
+                  template:
+                    includeAllSecrets: true
+                    metadata:
+                      annotations:
+                        reflector.v1.k8s.emberstack.com/reflection-allowed: "true"
+                        reflector.v1.k8s.emberstack.com/reflection-auto-enabled: "true"
+                        reflector.v1.k8s.emberstack.com/reflection-auto-namespaces: core-\${ENV}
             """.replace("\${ENV}", env).replace("\${STAGE}", stage).replace("\${PROJECT}", d.infisicalProject))
             _rmq_user_creds.metadata.annotations = anno("rmq-user-creds-bridge")
 
