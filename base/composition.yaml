@@ -244,6 +244,42 @@ spec:
             #
             # workspaceId se resuelve dentro del Job vía GET /v1/workspace
             # filtrando por slug, así no hay que hardcodear IDs por entorno.
+            # NetworkPolicy específica para los pods del CronJob.
+            # El ns infra-<env> tiene default-deny-all (emitido por esta misma
+            # Composition). El pod del bootstrap necesita salir a:
+            #   - kube-dns (UDP/TCP 53) — resolver hub-proxy y registry alpine
+            #   - hub-proxy.infisical:8080 — API Infisical (login + folders)
+            #   - internet 443 — apk add curl jq desde dl-cdn.alpinelinux.org
+            _folder_bootstrap_netpol = yaml.decode("""
+            apiVersion: networking.k8s.io/v1
+            kind: NetworkPolicy
+            metadata:
+              name: allow-infisical-folders-bootstrap
+              namespace: \${NS}
+            spec:
+              podSelector:
+                matchLabels:
+                  app.kubernetes.io/name: infisical-folders-bootstrap
+              policyTypes: [Egress]
+              egress:
+                - to:
+                    - namespaceSelector:
+                        matchLabels:
+                          kubernetes.io/metadata.name: kube-system
+                  ports:
+                    - { port: 53, protocol: UDP }
+                    - { port: 53, protocol: TCP }
+                - to:
+                    - namespaceSelector:
+                        matchLabels:
+                          kubernetes.io/metadata.name: infisical
+                  ports:
+                    - { port: 8080, protocol: TCP }
+                - ports:
+                    - { port: 443, protocol: TCP }
+            """.replace("\${NS}", ns))
+            _folder_bootstrap_netpol.metadata.annotations = anno("infisical-folders-bootstrap-netpol")
+
             _folder_bootstrap = yaml.decode("""
             apiVersion: batch/v1
             kind: CronJob
@@ -253,6 +289,7 @@ spec:
               labels:
                 docline.io/managed-by: crossplane
                 docline.io/environment: \${ENV}
+                app.kubernetes.io/name: infisical-folders-bootstrap
             spec:
               schedule: "*/15 * * * *"
               successfulJobsHistoryLimit: 1
@@ -263,6 +300,9 @@ spec:
                 spec:
                   backoffLimit: 2
                   template:
+                    metadata:
+                      labels:
+                        app.kubernetes.io/name: infisical-folders-bootstrap
                     spec:
                       restartPolicy: OnFailure
                       containers:
@@ -349,4 +389,4 @@ spec:
             """.replace("\${NS}", ns).replace("\${ENV}", env).replace("\${PROJECT}", d.infisicalProject).replace("\${STAGE}", stage))
             _folder_bootstrap.metadata.annotations = anno("infisical-folders-bootstrap")
 
-            items = [_namespace, _netpol, _env_config, _pg_env_roles, _rmq_user_creds, _folder_bootstrap] + [r for r in [_velero, _pg_claim, _mysql_claim, _rmq_claim] if r != None]
+            items = [_namespace, _netpol, _env_config, _pg_env_roles, _rmq_user_creds, _folder_bootstrap_netpol, _folder_bootstrap] + [r for r in [_velero, _pg_claim, _mysql_claim, _rmq_claim] if r != None]
