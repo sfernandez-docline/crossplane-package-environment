@@ -229,4 +229,124 @@ spec:
             _rmq_claim = yaml.decode(_cluster_claim_tmpl.replace("\${KIND}", "XZoneRabbitmqBoostrap").replace("\${SUFFIX}", "rabbitmq").replace("\${ENV}", env)) if do_rmq else None
             if _rmq_claim != None: _rmq_claim.metadata.annotations = anno("rabbitmq-bootstrap")
 
-            items = [_namespace, _netpol, _env_config, _pg_env_roles, _rmq_user_creds] + [r for r in [_velero, _pg_claim, _mysql_claim, _rmq_claim] if r != None]
+            # CronJob bootstrap carpetas Infisical: los InfisicalSecrets
+            # pg-env-roles-<env>-sync y rmq-<env>-user-creds-sync referencian
+            # /postgres/roles y /rabbitmq respectivamente en el proyecto
+            # Infisical del entorno. Si las carpetas no existen, el sync queda
+            # en error 404 y los Secrets K8s nunca se crean — los pods en
+            # core-<env> no arrancan. Este CronJob las crea de forma idempotente.
+            #
+            # Auth: Universal Auth login con clientId/clientSecret del Secret
+            # infisical-eso-auth (ya populado en cada infra-<env> por el bridge
+            # de identidad). El access token devuelto se usa para los POST
+            # /v1/folders. NO se usa identityAccessToken — ese campo no existe
+            # en el Secret; sólo está disponible vía login UA.
+            #
+            # workspaceId se resuelve dentro del Job vía GET /v1/workspace
+            # filtrando por slug, así no hay que hardcodear IDs por entorno.
+            _folder_bootstrap = yaml.decode("""
+            apiVersion: batch/v1
+            kind: CronJob
+            metadata:
+              name: infisical-folders-bootstrap
+              namespace: \${NS}
+              labels:
+                docline.io/managed-by: crossplane
+                docline.io/environment: \${ENV}
+            spec:
+              schedule: "*/15 * * * *"
+              successfulJobsHistoryLimit: 1
+              failedJobsHistoryLimit: 2
+              concurrencyPolicy: Forbid
+              startingDeadlineSeconds: 120
+              jobTemplate:
+                spec:
+                  backoffLimit: 2
+                  template:
+                    spec:
+                      restartPolicy: OnFailure
+                      containers:
+                      - name: create-folders
+                        image: docker.io/alpine:3.19
+                        env:
+                        - name: INFISICAL_CLIENT_ID
+                          valueFrom:
+                            secretKeyRef:
+                              name: infisical-eso-auth
+                              key: clientId
+                        - name: INFISICAL_CLIENT_SECRET
+                          valueFrom:
+                            secretKeyRef:
+                              name: infisical-eso-auth
+                              key: clientSecret
+                        - name: INFISICAL_API
+                          value: http://hub-proxy.infisical.svc.cluster.local:8080/api
+                        - name: INFISICAL_PROJECT_SLUG
+                          value: \${PROJECT}
+                        - name: INFISICAL_ENV
+                          value: \${STAGE}
+                        - name: FOLDERS
+                          value: "/:rabbitmq /:postgres /postgres:roles"
+                        command:
+                        - /bin/sh
+                        - -c
+                        - |
+                          set -eu
+                          apk add --no-cache curl jq >/dev/null
+
+                          API="$INFISICAL_API"
+                          SLUG="$INFISICAL_PROJECT_SLUG"
+                          ENV_SLUG="$INFISICAL_ENV"
+
+                          echo "Login Universal Auth ..."
+                          TOKEN=$(curl -fsS -X POST "$API/v1/auth/universal-auth/login" \\
+                            -H "Content-Type: application/json" \\
+                            -d "{\\"clientId\\":\\"$INFISICAL_CLIENT_ID\\",\\"clientSecret\\":\\"$INFISICAL_CLIENT_SECRET\\"}" \\
+                            | jq -r '.accessToken')
+                          if [ -z "$TOKEN" ] || [ "$TOKEN" = "null" ]; then
+                            echo "ERROR: UA login devolvió token vacío"
+                            exit 1
+                          fi
+
+                          echo "Resolviendo workspaceId para slug=$SLUG ..."
+                          WID=$(curl -fsS "$API/v1/workspace" \\
+                            -H "Authorization: Bearer $TOKEN" \\
+                            | jq -r --arg s "$SLUG" '.workspaces[] | select(.slug==$s) | .id')
+                          if [ -z "$WID" ]; then
+                            echo "ERROR: no workspace con slug=$SLUG accesible para la identidad"
+                            exit 1
+                          fi
+                          echo "workspaceId=$WID"
+
+                          RC=0
+                          for pair in $FOLDERS; do
+                            PARENT=$(echo "$pair" | cut -d: -f1)
+                            NAME=$(echo "$pair" | cut -d: -f2)
+                            HTTP=$(curl -s -o /tmp/resp.json -w "%{http_code}" \\
+                              -X POST "$API/v1/folders" \\
+                              -H "Authorization: Bearer $TOKEN" \\
+                              -H "Content-Type: application/json" \\
+                              -d "{\\"workspaceId\\":\\"$WID\\",\\"environment\\":\\"$ENV_SLUG\\",\\"name\\":\\"$NAME\\",\\"path\\":\\"$PARENT\\"}")
+                            case "$HTTP" in
+                              200|201)
+                                echo "  CREATED $PARENT/$NAME";;
+                              400)
+                                if grep -q "already exists" /tmp/resp.json; then
+                                  echo "  EXISTS  $PARENT/$NAME"
+                                else
+                                  echo "  FAIL    $PARENT/$NAME (HTTP $HTTP)"
+                                  cat /tmp/resp.json; echo
+                                  RC=1
+                                fi
+                                ;;
+                              *)
+                                echo "  FAIL    $PARENT/$NAME (HTTP $HTTP)"
+                                cat /tmp/resp.json; echo
+                                RC=1;;
+                            esac
+                          done
+                          exit $RC
+            """.replace("\${NS}", ns).replace("\${ENV}", env).replace("\${PROJECT}", d.infisicalProject).replace("\${STAGE}", stage))
+            _folder_bootstrap.metadata.annotations = anno("infisical-folders-bootstrap")
+
+            items = [_namespace, _netpol, _env_config, _pg_env_roles, _rmq_user_creds, _folder_bootstrap] + [r for r in [_velero, _pg_claim, _mysql_claim, _rmq_claim] if r != None]
