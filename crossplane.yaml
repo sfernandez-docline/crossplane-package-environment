@@ -26,3 +26,12 @@ spec:
   dependsOn:
     - function: xpkg.upbound.io/crossplane-contrib/function-kcl
       version: ">=v0.12.0,<v0.13.0"
+    # provider-kubernetes: necesario para emitir un Object que crea
+    # `pgbouncer/pg-env-roles-<env>` con labels pgbouncer.docline.io/* y
+    # `data` inyectada vía spec.references.patchesFrom desde el Secret
+    # origen en infra-<env>. Reemplaza el Reflector annotation previo
+    # (Reflector no propaga labels al destino, y el sidecar userlist-reloader
+    # del Deployment pgbouncer-<env> requiere ambas labels para incluir
+    # las keys en userlist.txt y mandar SIGHUP).
+    - provider: xpkg.upbound.io/crossplane-contrib/provider-kubernetes
+      version: ">=v0.14.0,<v2.0.0"

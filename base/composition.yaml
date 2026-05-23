@@ -156,17 +156,64 @@ spec:
                   creationPolicy: Owner
                   template:
                     includeAllSecrets: true
-                    # Reflector replica este Secret al ns pgbouncer, donde el
-                    # Deployment pgbouncer-<env> emitido por XZonePostgreBoostrap
-                    # lo monta como auth_file. Sin estas annotations el Secret
-                    # queda solo en infra-<env> y los pods pgbouncer no arrancan.
-                    metadata:
-                      annotations:
-                        reflector.v1.k8s.emberstack.com/reflection-allowed: "true"
-                        reflector.v1.k8s.emberstack.com/reflection-auto-enabled: "true"
-                        reflector.v1.k8s.emberstack.com/reflection-auto-namespaces: pgbouncer
             """.replace("\${ENV}", env).replace("\${NS}", ns).replace("\${STAGE}", stage).replace("\${PROJECT}", d.infisicalProject))
             _pg_env_roles.metadata.annotations = anno("pg-env-roles-bridge")
+
+            # Espejo del Secret pg-env-roles-<env> en ns `pgbouncer` con labels
+            # pgbouncer.docline.io/{enabled,env}. El sidecar userlist-reloader
+            # del Deployment pgbouncer-<env> (crossplane-package-databases-bootstrap
+            # >=1.11.0) hace `kubectl get secret -l pgbouncer.docline.io/enabled=true,
+            # pgbouncer.docline.io/env=<env>`, parsea las N keys, regenera
+            # /etc/pgbouncer/auth/userlist.txt y manda SIGHUP — reload zero-downtime.
+            #
+            # Por qué un Object provider-kubernetes en lugar de Reflector:
+            # Reflector copia `data` pero NO `metadata.labels` al destino. Sin
+            # labels en el Secret destino, el selector del sidecar no matchea y
+            # los users no entran al pool (vimos kubectl label manual durante
+            # el rollout inicial). spec.references.patchesFrom inyecta el
+            # objeto `data` entero del origen en el manifest del destino, y
+            # las labels viven en `metadata.labels` declaradas aquí explícitas.
+            _pg_env_roles_pgb_mirror = {
+                apiVersion = "kubernetes.m.crossplane.io/v1alpha1"
+                kind = "Object"
+                metadata = {
+                    name = "pg-env-roles-" + env + "-pgbouncer-mirror"
+                    namespace = ns
+                    annotations = anno("pg-env-roles-pgbouncer-mirror")
+                }
+                spec = {
+                    providerConfigRef = {kind = "ClusterProviderConfig", name = "default"}
+                    references = [{
+                        patchesFrom = {
+                            apiVersion = "v1"
+                            kind = "Secret"
+                            namespace = ns
+                            name = "pg-env-roles-" + env
+                            fieldPath = "data"
+                        }
+                        toFieldPath = "data"
+                    }]
+                    forProvider = {
+                        manifest = {
+                            apiVersion = "v1"
+                            kind = "Secret"
+                            type = "Opaque"
+                            metadata = {
+                                name = "pg-env-roles-" + env
+                                namespace = "pgbouncer"
+                                labels = {
+                                    "pgbouncer.docline.io/enabled" = "true"
+                                    "pgbouncer.docline.io/env" = env
+                                    "pgbouncer.docline.io/source" = "env-package"
+                                }
+                            }
+                            # data placeholder; references.patchesFrom inyecta el dict completo
+                            # del Secret origen en cada reconcile (atomic con el Object update).
+                            data = {}
+                        }
+                    }
+                }
+            }
 
             # RMQ user creds bridge: emite rmq-<env>-user-creds en namespace
             # `rabbitmq` (donde el operator de RabbitMQ lee importCredentialsSecret
@@ -434,4 +481,4 @@ spec:
             """.replace("\${ENV}", env))
             _allow_dns_core.metadata.annotations = anno("core-allow-dns-egress")
 
-            items = [_namespace, _netpol, _env_config, _pg_env_roles, _rmq_user_creds, _folder_bootstrap_netpol, _folder_bootstrap, _allow_dns_core] + [r for r in [_velero, _pg_claim, _mysql_claim, _rmq_claim] if r != None]
+            items = [_namespace, _netpol, _env_config, _pg_env_roles, _pg_env_roles_pgb_mirror, _rmq_user_creds, _folder_bootstrap_netpol, _folder_bootstrap, _allow_dns_core] + [r for r in [_velero, _pg_claim, _mysql_claim, _rmq_claim] if r != None]
