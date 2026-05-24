@@ -263,7 +263,20 @@ spec:
                   secretNamespace: rabbitmq
                   creationPolicy: Owner
                   template:
-                    includeAllSecrets: true
+                    # Renombramos las keys de Infisical a las que esperan los
+                    # consumers (deployments en core-<env> + User CR del
+                    # messaging-topology-operator) y que estan estandarizadas
+                    # en lowercase. Origen del bug: Infisical project
+                    # env-live-secrets/prod-morocco/rabbitmq tiene keys
+                    # RABBITMQ_USERNAME/RABBITMQ_PASSWORD (uppercase con
+                    # prefix legacy), mientras env-non-live-secrets/<env>/rabbitmq
+                    # ya esta migrado a username/password (lowercase).
+                    # Normalizar via template hace transparente la divergencia
+                    # historica en Infisical.
+                    includeAllSecrets: false
+                    data:
+                      username: "{{ if .username }}{{ .username.Value }}{{ else }}{{ .RABBITMQ_USERNAME.Value }}{{ end }}"
+                      password: "{{ if .password }}{{ .password.Value }}{{ else }}{{ .RABBITMQ_PASSWORD.Value }}{{ end }}"
                     metadata:
                       annotations:
                         reflector.v1.k8s.emberstack.com/reflection-allowed: "true"
