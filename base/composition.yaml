@@ -412,8 +412,23 @@ spec:
                           value: \${PROJECT}
                         - name: INFISICAL_ENV
                           value: \${STAGE}
+                        # FOLDERS: parent:name pares space-separated.
+                        # Skeleton común a TODOS los envs (live + non-live) — los entornos
+                        # non-live son copias del prod-morocco baseline (la fuente de
+                        # verdad estructural). El paquete environment garantiza que
+                        # cada env tenga el mismo arbol Infisical via este CronJob.
                         - name: FOLDERS
-                          value: "/:rabbitmq /:postgres /postgres:roles"
+                          value: "/:rabbitmq /:postgres /postgres:roles /:mysql /mysql:roles /mysql:users /:apps /apps:docline-backend /:clients-bootstrap"
+                        # SOURCE_PROJECT/SOURCE_ENV: workspace + env desde donde se
+                        # toma el "skeleton de keys" (nombres, no valores). Default
+                        # env-live-secrets/prod-morocco — la production es source-of-truth
+                        # estructural. El sync solo crea keys missing en el destino con
+                        # valor vacío; nunca sobrescribe ni copia values (security: no
+                        # leak prod-morocco passwords a non-live).
+                        - name: SOURCE_PROJECT_SLUG
+                          value: env-live-secrets
+                        - name: SOURCE_ENV
+                          value: prod-morocco
                         command:
                         - /bin/sh
                         - -c
@@ -424,6 +439,8 @@ spec:
                           API="$INFISICAL_API"
                           SLUG="$INFISICAL_PROJECT_SLUG"
                           ENV_SLUG="$INFISICAL_ENV"
+                          SRC_SLUG="$SOURCE_PROJECT_SLUG"
+                          SRC_ENV="$SOURCE_ENV"
 
                           echo "Login Universal Auth ..."
                           TOKEN=$(curl -fsS -X POST "$API/v1/auth/universal-auth/login" \\
@@ -435,7 +452,7 @@ spec:
                             exit 1
                           fi
 
-                          echo "Resolviendo workspaceId para slug=$SLUG ..."
+                          echo "Resolviendo workspaceId destino slug=$SLUG ..."
                           WID=$(curl -fsS "$API/v1/workspace" \\
                             -H "Authorization: Bearer $TOKEN" \\
                             | jq -r --arg s "$SLUG" '.workspaces[] | select(.slug==$s) | .id')
@@ -443,9 +460,11 @@ spec:
                             echo "ERROR: no workspace con slug=$SLUG accesible para la identidad"
                             exit 1
                           fi
-                          echo "workspaceId=$WID"
+                          echo "workspaceId destino: $WID"
 
+                          # --- FASE 1: crear FOLDERS missing (idempotente) ---
                           RC=0
+                          echo "=== FASE 1: folders ==="
                           for pair in $FOLDERS; do
                             PARENT=$(echo "$pair" | cut -d: -f1)
                             NAME=$(echo "$pair" | cut -d: -f2)
@@ -455,23 +474,74 @@ spec:
                               -H "Content-Type: application/json" \\
                               -d "{\\"workspaceId\\":\\"$WID\\",\\"environment\\":\\"$ENV_SLUG\\",\\"name\\":\\"$NAME\\",\\"path\\":\\"$PARENT\\"}")
                             case "$HTTP" in
-                              200|201)
-                                echo "  CREATED $PARENT/$NAME";;
+                              200|201) echo "  CREATED $PARENT/$NAME";;
                               400)
                                 if grep -q "already exists" /tmp/resp.json; then
                                   echo "  EXISTS  $PARENT/$NAME"
                                 else
-                                  echo "  FAIL    $PARENT/$NAME (HTTP $HTTP)"
-                                  cat /tmp/resp.json; echo
-                                  RC=1
-                                fi
-                                ;;
+                                  echo "  FAIL    $PARENT/$NAME (HTTP $HTTP)"; cat /tmp/resp.json; echo; RC=1
+                                fi;;
                               *)
-                                echo "  FAIL    $PARENT/$NAME (HTTP $HTTP)"
-                                cat /tmp/resp.json; echo
-                                RC=1;;
+                                echo "  FAIL    $PARENT/$NAME (HTTP $HTTP)"; cat /tmp/resp.json; echo; RC=1;;
                             esac
                           done
+
+                          # --- FASE 2: sync keys skeleton desde SOURCE ---
+                          # Para cada path en FOLDERS (más "/" root), leer las keys que
+                          # existen en SOURCE_PROJECT/SOURCE_ENV. Para cada key:
+                          #   - Si la key contiene "-prod-morocco" o "_prod_morocco",
+                          #     remapear al env destino (prod-morocco → $ENV_SLUG).
+                          #   - Si la key ya existe en destino, skip.
+                          #   - Si NO existe, crear con value vacio ("").
+                          # NUNCA copia values del source (security: no leak prod creds).
+                          # El operador debe poblar manualmente las keys tras este sync.
+                          #
+                          # Source workspace ID (puede fallar si identity no tiene acceso —
+                          # esperado y aceptable: sync solo funciona si la identity del
+                          # destino tiene read en el source también).
+                          echo "=== FASE 2: keys skeleton (source=$SRC_SLUG/$SRC_ENV → dst=$SLUG/$ENV_SLUG) ==="
+                          SRC_WID=$(curl -fsS "$API/v1/workspace" \\
+                            -H "Authorization: Bearer $TOKEN" \\
+                            | jq -r --arg s "$SRC_SLUG" '.workspaces[] | select(.slug==$s) | .id')
+                          if [ -z "$SRC_WID" ] || [ "$SRC_WID" = "null" ]; then
+                            echo "  SKIP: identity sin acceso a source $SRC_SLUG (esperado si live)"
+                          else
+                            ENV_UNDERSCORE=$(echo "$ENV_SLUG" | tr '-' '_')
+                            # Paths a procesar: "/" + parents+names del FOLDERS list (dedup).
+                            PATHS="/"
+                            for pair in $FOLDERS; do
+                              P=$(echo "$pair" | cut -d: -f1)
+                              N=$(echo "$pair" | cut -d: -f2)
+                              SUB=$(echo "$P" | sed 's|/$||')"/$N"
+                              PATHS="$PATHS $SUB"
+                            done
+                            PATHS=$(echo "$PATHS" | tr ' ' '\\n' | sort -u | tr '\\n' ' ')
+                            for PATH_ in $PATHS; do
+                              SRC_KEYS=$(curl -fsS "$API/v3/secrets/raw?workspaceSlug=$SRC_SLUG&environment=$SRC_ENV&secretPath=$PATH_" \\
+                                -H "Authorization: Bearer $TOKEN" \\
+                                | jq -r '.secrets[].secretKey' 2>/dev/null || echo "")
+                              if [ -z "$SRC_KEYS" ]; then continue; fi
+                              DST_KEYS=$(curl -fsS "$API/v3/secrets/raw?workspaceSlug=$SLUG&environment=$ENV_SLUG&secretPath=$PATH_" \\
+                                -H "Authorization: Bearer $TOKEN" \\
+                                | jq -r '.secrets[].secretKey' 2>/dev/null || echo "")
+                              for K in $SRC_KEYS; do
+                                DST_K=$(echo "$K" | sed "s|-prod-morocco|-$ENV_SLUG|g; s|_prod_morocco|_$ENV_UNDERSCORE|g")
+                                if echo "$DST_KEYS" | grep -qx "$DST_K"; then
+                                  echo "  SKIP   $PATH_ $DST_K (exists)"
+                                  continue
+                                fi
+                                HTTP=$(curl -s -o /tmp/resp.json -w "%{http_code}" \\
+                                  -X POST "$API/v3/secrets/raw/$DST_K" \\
+                                  -H "Authorization: Bearer $TOKEN" \\
+                                  -H "Content-Type: application/json" \\
+                                  -d "{\\"projectSlug\\":\\"$SLUG\\",\\"environment\\":\\"$ENV_SLUG\\",\\"secretPath\\":\\"$PATH_\\",\\"secretValue\\":\\"\\",\\"secretComment\\":\\"Auto-created skeleton from $SRC_SLUG/$SRC_ENV\\"}")
+                                case "$HTTP" in
+                                  200|201) echo "  CREATED $PATH_ $DST_K (empty)";;
+                                  *)       echo "  FAIL    $PATH_ $DST_K (HTTP $HTTP)"; cat /tmp/resp.json; echo; RC=1;;
+                                esac
+                              done
+                            done
+                          fi
                           exit $RC
             """.replace("\${NS}", ns).replace("\${ENV}", env).replace("\${PROJECT}", d.infisicalProject).replace("\${STAGE}", stage))
             _folder_bootstrap.metadata.annotations = anno("infisical-folders-bootstrap")
