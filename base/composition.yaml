@@ -80,6 +80,14 @@ spec:
                 stage: \${STAGE}
                 docline.io/managed-by: crossplane
                 docline.io/environment: \${ENV}
+                # FinOps: el ns infra-<env> es plataforma/infra del entorno.
+                # family/team/cost-center alimentan el chargeback de Kubecost
+                # (labelMappingConfigs docline.io/*); tier=infra cierra la deuda
+                # de PriorityClass (MAP) para los namespaces dinámicos.
+                docline.io/family: infra
+                docline.io/tier: infra
+                docline.io/team: platform
+                docline.io/cost-center: infra
             """.replace("\${NS}", ns).replace("\${TYPE}", envType).replace("\${STAGE}", stage).replace("\${ENV}", env))
             _namespace.metadata.annotations = anno("namespace")
 
