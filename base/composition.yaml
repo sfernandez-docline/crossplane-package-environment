@@ -354,6 +354,80 @@ spec:
             """.replace("\${NS}", ns))
             _folder_bootstrap_netpol.metadata.annotations = anno("infisical-folders-bootstrap-netpol")
 
+            # NetworkPolicies para que el Atlas Operator pueda gestionar schemas
+            # bajo el default-deny-all del ns infra-<env>. Sin estas, los pods
+            # `atlas-dev-db` (dev-db efímeras que Atlas levanta para calcular el
+            # diff de schema) no reciben conexión del operator → AtlasSchema se
+            # queda en "CalculatingHash: connection timed out" y NUNCA aplica;
+            # y los Jobs pg-seed/atlas-apply no resuelven DNS ni alcanzan la DB
+            # (RDS AWS o MDS OCI) → "Temporary failure in name resolution".
+            #
+            # Antes existían a mano por entorno con nombres divergentes
+            # (int/qa/staging: allow-atlas-operator-ingress + allow-egress-dns-pg;
+            # prod-morocco: allow-atlas-devdb-ingress + allow-dns + ...). Al
+            # emitirlas desde esta Composition quedan IDÉNTICAS en todos los
+            # entornos → render 0-diff y no hace falta crearlas a mano por env.
+            #
+            # 1) Ingress a las dev-db de Atlas desde el ns del operator.
+            _atlas_devdb_ingress = yaml.decode("""
+            apiVersion: networking.k8s.io/v1
+            kind: NetworkPolicy
+            metadata:
+              name: allow-atlas-operator-ingress
+              namespace: \${NS}
+            spec:
+              podSelector:
+                matchLabels:
+                  app.kubernetes.io/name: atlas-dev-db
+                  app.kubernetes.io/part-of: atlas-operator
+              policyTypes: [Ingress]
+              ingress:
+                - from:
+                    - namespaceSelector:
+                        matchLabels:
+                          kubernetes.io/metadata.name: atlas-operator
+                  ports:
+                    - { port: 5432, protocol: TCP }
+                    - { port: 3306, protocol: TCP }
+            """.replace("\${NS}", ns))
+            _atlas_devdb_ingress.metadata.annotations = anno("allow-atlas-operator-ingress")
+
+            # 2) Egress de todos los pods de infra-<env> a DNS + DB + RMQ.
+            #    ipBlock 0.0.0.0/0 cubre RDS AWS (non-live) y MDS OCI (morocco)
+            #    indistintamente — el endpoint real lo fija el bridge/secret.
+            _atlas_db_egress = yaml.decode("""
+            apiVersion: networking.k8s.io/v1
+            kind: NetworkPolicy
+            metadata:
+              name: allow-egress-dns-pg
+              namespace: \${NS}
+            spec:
+              podSelector: {}
+              policyTypes: [Egress]
+              egress:
+                - to:
+                    - namespaceSelector:
+                        matchLabels:
+                          kubernetes.io/metadata.name: kube-system
+                  ports:
+                    - { port: 53, protocol: UDP }
+                    - { port: 53, protocol: TCP }
+                - to:
+                    - ipBlock: { cidr: 0.0.0.0/0 }
+                  ports:
+                    - { port: 5432, protocol: TCP }
+                - to:
+                    - ipBlock: { cidr: 0.0.0.0/0 }
+                  ports:
+                    - { port: 3306, protocol: TCP }
+                - to:
+                    - ipBlock: { cidr: 0.0.0.0/0 }
+                  ports:
+                    - { port: 5672, protocol: TCP }
+                    - { port: 15672, protocol: TCP }
+            """.replace("\${NS}", ns))
+            _atlas_db_egress.metadata.annotations = anno("allow-egress-dns-pg")
+
             _folder_bootstrap = yaml.decode("""
             apiVersion: batch/v1
             kind: CronJob
@@ -507,4 +581,4 @@ spec:
             """.replace("\${ENV}", env))
             _allow_dns_core.metadata.annotations = anno("core-egress-common")
 
-            items = [_namespace, _netpol, _env_config, _pg_env_roles, _pg_env_roles_pgb_mirror, _rmq_user_creds, _folder_bootstrap_netpol, _folder_bootstrap, _allow_dns_core] + [r for r in [_velero, _pg_claim, _mysql_claim, _rmq_claim] if r != None]
+            items = [_namespace, _netpol, _env_config, _pg_env_roles, _pg_env_roles_pgb_mirror, _rmq_user_creds, _folder_bootstrap_netpol, _atlas_devdb_ingress, _atlas_db_egress, _folder_bootstrap, _allow_dns_core] + [r for r in [_velero, _pg_claim, _mysql_claim, _rmq_claim] if r != None]
