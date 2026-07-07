@@ -75,8 +75,11 @@ spec:
                   value: "https://github.com/sfernandez-docline/crossplane-package-environment.git"
                 - name: branch
                   value: "{{workflow.parameters.branch}}"
+                # release-base emite la versión SIN 'v' (ej. 0.6.0); este paquete
+                # usa tags de imagen v-prefijados (v0.6.0) por convención + coherencia
+                # con sus git tags. Prefijamos 'v' aquí (build-xpkg usa :${version} literal).
                 - name: version
-                  value: "{{tasks.release.outputs.parameters.version}}"
+                  value: "v{{tasks.release.outputs.parameters.version}}"
                 - name: packageName
                   value: "crossplane-package-environment"
                 - name: packageRoot
