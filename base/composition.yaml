@@ -564,21 +564,27 @@ spec:
             """.replace("\${NS}", ns).replace("\${ENV}", env).replace("\${PROJECT}", d.infisicalProject).replace("\${STAGE}", stage))
             _folder_bootstrap.metadata.annotations = anno("infisical-folders-bootstrap")
 
-            # NetworkPolicy `core-egress-common` en core-<env>: extiende las
-            # netpols por-microservicio (cdc-allow, ms-event-cdc-allow, etc.)
-            # con egress comunes que TODAS las apps necesitan pero las netpols
-            # individuales no incluyen siempre:
-            #   - DNS (kube-system :53)        — resolución de hostnames
-            #   - pgbouncer (:5432)            — PostgreSQL via pooler per env
+            # NetworkPolicy `core-egress-common` en core-<env>: la RED es un
+            # concern del *environment*, no de cada app. Con podSelector vacío
+            # abre a TODOS los pods de core-<env> los egresos comunes, sin que
+            # cada repo legacy-<svc>-ops declare y mantenga su propia netpol.
             #
-            # Las netpols por-app declaran policyTypes: [Egress] sin abrir
-            # estos egresos comunes → pods crashlopean (EAI_AGAIN,
-            # "Connection terminated due to connection timeout" en pg).
+            # Base (TODOS los envs, incl. live):
+            #   - DNS (kube-system :53)         — resolución de hostnames
+            #   - pgbouncer (:5432)             — PostgreSQL via pooler per env
             #
-            # K8s suma reglas de múltiples NetworkPolicies que matchen el pod,
-            # así que esta policy con podSelector vacío abre estos egresos
-            # sin tocar las netpols por-app. Fix transitorio hasta que cada
-            # repo legacy-<svc>-ops incluya estas reglas en su netpol.
+            # Extendido (SOLO nonlive/ephemeral, ver bloque envType abajo):
+            #   - MySQL (:3306)                 — RDS non-live
+            #   - RabbitMQ (:5672)              — bus de eventos per env
+            #   - valkey/redis (:6379)          — cache/colas per env
+            #   - HTTPS (:443)                  — webhooks vía Cloudflare, APIs
+            #   - same-ns (:80/:8080)           — gateway <-> backends, DOCLINE_API_URL
+            #
+            # En live NO se extiende: prod-morocco ya trae estos egresos por sus
+            # propios netpols per-servicio (otra fuente) → core-egress-common en
+            # live se queda en DNS+pgbouncer, 0-diff prod. K8s suma las reglas de
+            # todas las netpols que matchen el pod, así que en non-live esto
+            # generaliza el egress sin per-app netpols ni overlays.
             #
             # core-<env> ns lo crea la App de ArgoCD del servicio (no esta
             # Composition). Crossplane reintenta si aún no existe.
@@ -607,5 +613,25 @@ spec:
                     - { port: 5432, protocol: TCP }
             """.replace("\${ENV}", env))
             _allow_dns_core.metadata.annotations = anno("core-egress-common")
+
+            # Egress extendido SOLO para nonlive/ephemeral. En live (prod-morocco)
+            # NO lo añadimos: prod ya trae sus propios netpols per-servicio
+            # (allow-mysql-egress / allow-intra-namespace desde otra fuente), así
+            # que core-egress-common en live se queda en DNS+pgbouncer → 0-diff
+            # prod. Mismo idiom envType que subdomain_suffix (arriba): una sola
+            # rama por tipo dentro del paquete, sin per-app netpols ni overlays.
+            if envType in ["nonlive", "ephemeral"]:
+                _allow_dns_core.spec.egress += [
+                    # MySQL (RDS non-live) — docline-backend, cdc, ms-event-cdc, prescription-platform
+                    {to = [{ipBlock = {cidr = "0.0.0.0/0"}}], ports = [{port = 3306, protocol = "TCP"}]}
+                    # RabbitMQ per env
+                    {to = [{namespaceSelector = {matchLabels = {"kubernetes.io/metadata.name" = "rabbitmq"}}}], ports = [{port = 5672, protocol = "TCP"}]}
+                    # valkey / redis per env
+                    {to = [{namespaceSelector = {matchLabels = {"kubernetes.io/metadata.name" = "valkey"}}}], ports = [{port = 6379, protocol = "TCP"}]}
+                    # HTTPS externo (webhooks via Cloudflare, APIs externas)
+                    {to = [{ipBlock = {cidr = "0.0.0.0/0"}}], ports = [{port = 443, protocol = "TCP"}]}
+                    # llamadas internas same-namespace (gateway <-> backends, DOCLINE_API_URL)
+                    {to = [{podSelector = {}}], ports = [{port = 80, protocol = "TCP"}, {port = 8080, protocol = "TCP"}]}
+                ]
 
             items = [_namespace, _netpol, _env_config, _pg_env_roles, _pg_env_roles_pgb_mirror, _rmq_user_creds, _folder_bootstrap_netpol, _atlas_devdb_ingress, _atlas_db_egress, _folder_bootstrap, _allow_dns_core] + [r for r in [_velero, _pg_claim, _mysql_claim, _rmq_claim] if r != None]
