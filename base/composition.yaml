@@ -344,7 +344,11 @@ spec:
             # Composition). El pod del bootstrap necesita salir a:
             #   - kube-dns (UDP/TCP 53) — resolver hub-proxy y registry alpine
             #   - hub-proxy.infisical:8080 — API Infisical (login + folders)
-            #   - internet 443 — apk add curl jq desde dl-cdn.alpinelinux.org
+            #   - internet 443 — ya NO lo necesita el bootstrap (curl y jq vienen en la
+            #     imagen desde 2026-07-29; antes era para `apk add`). La regla SE MANTIENE
+            #     a propósito: retirarla es un cambio de superficie de red que no aporta
+            #     nada a este arreglo y podría romper el pull de imagen en algún registry
+            #     mirror. Si algún día se endurece la red del ns, revisarla AQUÍ.
             _folder_bootstrap_netpol = yaml.decode("""
             apiVersion: networking.k8s.io/v1
             kind: NetworkPolicy
@@ -460,14 +464,32 @@ spec:
                 docline.io/environment: \${ENV}
                 app.kubernetes.io/name: infisical-folders-bootstrap
             spec:
-              schedule: "*/15 * * * *"
+              # HORARIO en el minuto 7, no cada 15 min en punto (2026-07-29).
+              # Este CronJob es un BOOTSTRAP: crea el esqueleto de carpetas la primera
+              # vez que existe el entorno y a partir de ahí sólo verifica. Medido en
+              # zone-non-live: en régimen estacionario cada run imprime 9 x "EXISTS" y
+              # termina en 2-3 s; las 36 carpetas (9 x 4 envs) ya existían. Cada 15 min
+              # x 4 namespaces eran ~380 ejecuciones/día para no crear nada.
+              # El minuto 7 evita además el arranque en punto, donde compite con el resto
+              # de la flota de cronjobs de la zona.
+              # NO se pasa a Job de una sola vez a propósito: se conserva la
+              # reconciliación para que un entorno NUEVO obtenga su esqueleto sin
+              # intervención (y el destino es declararlas como MR cuando
+              # provider-infisical exponga folders; hoy no lo hace ni en v0.1.14, aunque
+              # el terraform-provider sí tiene `infisical_secret_folder`).
+              schedule: "7 * * * *"
               successfulJobsHistoryLimit: 1
               failedJobsHistoryLimit: 2
               concurrencyPolicy: Forbid
               startingDeadlineSeconds: 120
               jobTemplate:
                 spec:
-                  backoffLimit: 2
+                  # 4 y no 2: los pods son efímeros (2-3 s) y aterrizan en nodos spot que
+                  # Karpenter consolida de continuo (3 nodos nuevos en un solo día en
+                  # zone-non-live). Un desalojo a mitad de run gastaba 1 de los 3 intentos,
+                  # y tres seguidos dejaban el Job en BackoffLimitExceeded — Jobs Failed
+                  # alternando con Complete, ruido que TAPA problemas reales.
+                  backoffLimit: 4
                   template:
                     metadata:
                       labels:
@@ -476,7 +498,13 @@ spec:
                       restartPolicy: OnFailure
                       containers:
                       - name: create-folders
-                        image: docker.io/alpine:3.19
+                        # alpine/k8s trae curl + jq DENTRO de la imagen. Antes era
+                        # alpine:3.19 + `apk add --no-cache curl jq` en cada ejecución:
+                        # con `set -eu`, cualquier tropiezo del mirror de Alpine mataba el
+                        # run (y eran ~380 instalaciones/día sólo para verificar carpetas
+                        # que ya existen). Misma imagen que ya usa el reconciler de
+                        # nonlive-power en platform-bootstrap.
+                        image: docker.io/alpine/k8s:1.31.1
                         env:
                         - name: INFISICAL_CLIENT_ID
                           valueFrom:
@@ -513,7 +541,12 @@ spec:
                         - -c
                         - |
                           set -eu
-                          apk add --no-cache curl jq >/dev/null
+                          # SOLO CREA. Superficie completa del script: POST /login,
+                          # GET /v1/workspace y POST /v1/folders (crear si falta; un 400
+                          # "already exists" cuenta como OK). No hay ningún verbo de
+                          # borrado ni de sobrescritura sobre carpetas o secretos
+                          # existentes, y no debe añadirse.
+                          # curl y jq vienen en la imagen (ver comentario del `image`).
 
                           API="$INFISICAL_API"
                           SLUG="$INFISICAL_PROJECT_SLUG"
