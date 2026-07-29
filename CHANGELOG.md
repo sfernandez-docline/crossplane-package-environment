@@ -1,3 +1,10 @@
+## [0.6.1](https://github.com/sfernandez-docline/crossplane-package-environment/compare/v0.6.0...v0.6.1) (2026-07-29)
+
+### Bug Fixes
+
+* **folders-bootstrap:** horario + imagen con curl/jq + tolerar desalojos ([b017b4e](https://github.com/sfernandez-docline/crossplane-package-environment/commit/b017b4ed6336414fc835998bfc898b62aaf84d72))
+* **release:** tag de imagen v-prefijado (v${version}) al invocar build-xpkg ([#6](https://github.com/sfernandez-docline/crossplane-package-environment/issues/6)) ([b0f6c2c](https://github.com/sfernandez-docline/crossplane-package-environment/commit/b0f6c2c20915b0d729c645f9b8ab2b2bb974563e))
+
 ## [0.6.0](https://github.com/sfernandez-docline/crossplane-package-environment/compare/v0.5.4...v0.6.0) (2026-07-07)
 
 ### Features
