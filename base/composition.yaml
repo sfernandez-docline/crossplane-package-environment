@@ -667,4 +667,54 @@ spec:
                     {to = [{podSelector = {}}], ports = [{port = 80, protocol = "TCP"}, {port = 8080, protocol = "TCP"}]}
                 ]
 
-            items = [_namespace, _netpol, _env_config, _pg_env_roles, _pg_env_roles_pgb_mirror, _rmq_user_creds, _folder_bootstrap_netpol, _atlas_devdb_ingress, _atlas_db_egress, _folder_bootstrap, _allow_dns_core] + [r for r in [_velero, _pg_claim, _mysql_claim, _rmq_claim] if r != None]
+            # NetworkPolicy `allow-smtp-ses`: SMTP saliente a Amazon SES.
+            #
+            # No va dentro de core-egress-common a propósito: ahí el podSelector
+            # es {} (TODOS los pods del ns) y abrir 587/465 a Internet para todo
+            # el namespace es más de lo necesario. Esta la acota a los pods de
+            # `docline-backend`, que es el único que envía correo.
+            #
+            # Es una RÉPLICA EXACTA de la que prod-morocco ya tiene hand-crafted
+            # (pb-main/zones/morocco/environments/prod-morocco/50-netpol-default/
+            # 40-core-allow-smtp-ses.yaml, App platform-zone-morocco): mismo
+            # nombre, mismo selector, mismos puertos y mismo `except` de rangos
+            # privados (solo Internet público — evita movimiento lateral).
+            #
+            # 11-sep-2026: sin esto, non-live NO podía enviar correo. `core-egress-
+            # common` abre 443 pero NO 587, así que el envío moría en timeout de
+            # CONEXIÓN contra email-smtp.<region>.amazonaws.com — no en un 535 de
+            # credenciales, que es el diagnóstico fácil y equivocado. Verificado en
+            # int y qa: 443 abre al instante contra endpoints de AWS y 587 da
+            # timeout a los 8s en eu-central-1 y eu-west-1.
+            #
+            # Gate envType: SOLO nonlive/ephemeral. En live no se emite → morocco
+            # conserva la suya hand-crafted y el render sale 0-diff.
+            _allow_smtp_ses = yaml.decode("""
+            apiVersion: networking.k8s.io/v1
+            kind: NetworkPolicy
+            metadata:
+              name: allow-smtp-ses
+              namespace: core-\${ENV}
+            spec:
+              podSelector:
+                matchLabels:
+                  app.kubernetes.io/name: docline-backend
+              policyTypes: [Egress]
+              egress:
+                - to:
+                    - ipBlock:
+                        cidr: 0.0.0.0/0
+                        except:
+                          - 10.0.0.0/8
+                          - 172.16.0.0/12
+                          - 192.168.0.0/16
+                          - 100.64.0.0/10
+                          - 169.254.0.0/16
+                  ports:
+                    - { port: 587, protocol: TCP }
+                    - { port: 465, protocol: TCP }
+            """.replace("\${ENV}", env)) if envType in ["nonlive", "ephemeral"] else None
+            if _allow_smtp_ses != None:
+                _allow_smtp_ses.metadata.annotations = anno("allow-smtp-ses")
+
+            items = [_namespace, _netpol, _env_config, _pg_env_roles, _pg_env_roles_pgb_mirror, _rmq_user_creds, _folder_bootstrap_netpol, _atlas_devdb_ingress, _atlas_db_egress, _folder_bootstrap, _allow_dns_core] + [r for r in [_velero, _pg_claim, _mysql_claim, _rmq_claim, _allow_smtp_ses] if r != None]
