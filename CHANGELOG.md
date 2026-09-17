@@ -1,3 +1,10 @@
+## [0.6.2](https://github.com/sfernandez-docline/crossplane-package-environment/compare/v0.6.1...v0.6.2) (2026-09-17)
+
+### Bug Fixes
+
+* **folders-bootstrap:** activeDeadlineSeconds — el CronJob se atascaba para siempre ([#9](https://github.com/sfernandez-docline/crossplane-package-environment/issues/9)) ([6d14d91](https://github.com/sfernandez-docline/crossplane-package-environment/commit/6d14d916e96a4a9a405f5c40fc574e603013b33b))
+* **netpol:** SMTP saliente a SES en non-live — el correo moría en timeout de conexión ([#8](https://github.com/sfernandez-docline/crossplane-package-environment/issues/8)) ([bb53e05](https://github.com/sfernandez-docline/crossplane-package-environment/commit/bb53e05024d20a11babdc62505b78eda3537ae57))
+
 ## [0.6.1](https://github.com/sfernandez-docline/crossplane-package-environment/compare/v0.6.0...v0.6.1) (2026-07-29)
 
 ### Bug Fixes
