@@ -490,6 +490,20 @@ spec:
                   # y tres seguidos dejaban el Job en BackoffLimitExceeded — Jobs Failed
                   # alternando con Complete, ruido que TAPA problemas reales.
                   backoffLimit: 4
+                  # ⛔ SIN esto el CronJob se atasca PARA SIEMPRE. Con
+                  # `concurrencyPolicy: Forbid` un Job que nunca termina bloquea
+                  # todas las ejecuciones siguientes, y eso no es hipotético:
+                  # el 17-sep-2026 los 4 entornos de non-live llevaban 14h sin
+                  # ejecutar. El Job de las 17:07 había arrancado justo antes del
+                  # apagado nocturno de la zona; su pod se quedó `Pending` ("no
+                  # nodes available", 4667 reintentos) y siguió contando como
+                  # `active` toda la noche y toda la mañana siguiente.
+                  #
+                  # 600 s = 10 min: el run normal tarda 2-3 s, así que sobra de
+                  # largo para un reintento con backoff, y corta mucho antes de
+                  # que el siguiente tick (cada hora) lo necesite. Al vencer, el
+                  # Job pasa a Failed y el CronJob queda libre.
+                  activeDeadlineSeconds: 600
                   template:
                     metadata:
                       labels:
